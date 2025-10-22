@@ -1,5 +1,6 @@
-Core/Src/usb_otg.o: ../Core/Src/usb_otg.c ../Core/Inc/usb_otg.h \
- ../Core/Inc/main.h ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal.h \
+Core/Src/ssd1306_tests.o: ../Core/Src/ssd1306_tests.c \
+ ../Core/Inc/ssd1306.h ../Core/Inc/ssd1306_conf.h \
+ ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal.h \
  ../Core/Inc/stm32f7xx_hal_conf.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_rcc.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_def.h \
@@ -32,9 +33,11 @@ Core/Src/usb_otg.o: ../Core/Src/usb_otg.c ../Core/Inc/usb_otg.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_uart_ex.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_pcd.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_ll_usb.h \
- ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_pcd_ex.h
-../Core/Inc/usb_otg.h:
-../Core/Inc/main.h:
+ ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_pcd_ex.h \
+ ../Core/Inc/ssd1306_tests.h ../Core/Inc/ssd1306_fonts.h \
+ ../Core/Inc/ssd1306.h
+../Core/Inc/ssd1306.h:
+../Core/Inc/ssd1306_conf.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal.h:
 ../Core/Inc/stm32f7xx_hal_conf.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_rcc.h:
@@ -69,3 +72,6 @@ Core/Src/usb_otg.o: ../Core/Src/usb_otg.c ../Core/Inc/usb_otg.h \
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_pcd.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_ll_usb.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_pcd_ex.h:
+../Core/Inc/ssd1306_tests.h:
+../Core/Inc/ssd1306_fonts.h:
+../Core/Inc/ssd1306.h:
