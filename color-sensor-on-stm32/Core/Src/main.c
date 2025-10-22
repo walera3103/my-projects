@@ -24,6 +24,9 @@
 #include "usart.h"
 #include "usb_otg.h"
 #include "gpio.h"
+#include "ssd1306.h"
+#include "ssd1306_tests.h"
+#include "ssd1306_fonts.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -41,9 +44,9 @@
 /* USER CODE BEGIN PD */
 #define INPUT_UART_BUFFER_SIZE 4
 #define ISL29125_I2C_ADDRESS (0x44 << 1)  // Adres 7-bitowy przesunięty w lewo
-# define PWM_FREQUENCY 1000 // Czę stotliwo ść PWM 1 kHz
+# define PWM_FREQUENCY 1000 // Częstotliwość PWM 1 kHz
 # define FRAME_LENGTH 5
-# define FRAME_SIZE 12 // Komenda ma dł ugość 9 znak ów: R050G025B075
+# define FRAME_SIZE 12 // Komenda ma długość 9 znaków: R050G025B075
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -74,14 +77,27 @@ int max_PWM_red_value = MAX_RED_PWM;
 int max_PWM_green_value = MAX_GREEN_PWM;
 int max_PWM_blue_value = MAX_BLUE_PWM;
 int test_sizeof = 0;
+int timer_val;
+int oled_screen = 0;
+int oled_x_counter = 0;
+int oled_x_number_left = 10;
+int oled_x_number_right = 20;
+int oled_x_coordinate_left = 57;
+int oled_x_coordinate_right = 115;
 bool normal_mode = true;
 bool test;
+bool is_number_long = false;
 char previous_temp_buffer[10];
 char buffor_for_lcd[10];
 char mode_normal[] = "mode:normal";
 char mode_high[] = "mode:high";
 char help[] = "help";
-
+char red_str[3];
+char green_str[3];
+char blue_str[3];
+char number_left[4];
+char number_right[4];
+//char oled[] = "Hello oled";
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
@@ -89,23 +105,8 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-//    if (huart->Instance == USART3) {
-//        HAL_UART_Transmit(&huart3, (uint8_t *)"Interrupt triggered\r\n", strlen("Interrupt triggered\r\n"), HAL_MAX_DELAY);
-//        //R_value = 0;
-//        // Zwiększ indeks bufora i odbierz kolejny bajt
-//        if (input_uart_index < INPUT_UART_BUFFER_SIZE - 1) {
-//            input_uart_index++;
-//            HAL_UART_Receive_IT(&huart3, (uint8_t *)&input_uart_buffer[input_uart_index], 1);
-//        } else {
-//            input_data_ready = 1; // Ustaw flagę gotowości danych
-//        }
-//    } else {
-//    	exit(0);
-//    }
-//}
 
-void ISL29125_Init(void) {
+void ISL29125_Init() {
     uint8_t config_data[2];
 
     // Ustawienie trybu pracy
@@ -123,6 +124,7 @@ void ISL29125_Init(void) {
         HAL_UART_Transmit(&huart3, (uint8_t *)"I2C error in step 2\r\n", strlen("I2C error in step 2\r\n"), HAL_MAX_DELAY);
         Error_Handler();
     }
+    return 0;
 }
 
 uint16_t ISL29125_ReadColor(uint8_t color_register) {
@@ -209,14 +211,14 @@ void rewrite_previous_temp_buffer() {
 	}
 }
 
-int check_mode_normal() {
+bool check_mode_normal() {
 	for(int i = 0; i < 11; i++) {
 		if(temp_buffer[i] != mode_normal[i]) {
-			return 0;
+			return false;
 			exit(0);
 		}
 	}
-	return 1;
+	return true;
 }
 
 int check_mode_high() {
@@ -238,6 +240,7 @@ int check_help() {
 	}
 	return 1;
 }
+
 /* USER CODE END 0 */
 
 /**
@@ -274,13 +277,13 @@ int main(void)
   MX_USB_OTG_FS_PCD_Init();
   MX_I2C1_Init();
   MX_TIM3_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
   HAL_UART_Transmit(&huart3, (uint8_t *)"Starting I2C scan...\r\n", strlen("Starting I2C scan...\r\n"), HAL_MAX_DELAY);
   I2C_Scan();
   LCD_Init();
 
-  snprintf(uart_buffer, sizeof(uart_buffer), "Hello world\r\n");
-  HAL_UART_Transmit(&huart3, (uint8_t *)uart_buffer, strlen(uart_buffer), HAL_MAX_DELAY);
+  ssd1306_Init();
 
   ISL29125_Init();
   snprintf(uart_buffer, sizeof(uart_buffer), "ISL29125 Initialized\r\n");
@@ -298,6 +301,9 @@ int main(void)
   LCD_Set_Cursor(1, 10);
   LCD_Send_String("B0");
 
+  uint32_t last_time_update = HAL_GetTick();
+  sprintf(number_left, "%u", oled_x_number_left);
+  sprintf(number_right, "%u", oled_x_number_right);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -307,6 +313,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  //ssd1306_TestAll();
 	  uint16_t green_raw = ISL29125_ReadColor(0x09);    // Odczyt RED
 	  uint16_t red_raw = ISL29125_ReadColor(0x0B);  // Odczyt GREEN
 	  uint16_t blue_raw = ISL29125_ReadColor(0x0D);   // Odczyt BLUE
@@ -315,10 +322,6 @@ int main(void)
 	  uint8_t red = map_value(red_raw, 0, 65535, 0, 255);
 	  uint8_t green = map_value(green_raw, 0, 65535, 0, 255);
 	  uint8_t blue = map_value(blue_raw, 0, 65535, 0, 255);
-
-	  red = red * 1;
-	  green = green; // *6
-	  blue = blue * 1;
 
 	  test = HAL_GPIO_ReadPin(MODE_GPIO_Port, MODE_Pin);
 
@@ -435,6 +438,22 @@ int main(void)
 			  }
 		  }
 	  }
+
+	  if(HAL_GPIO_ReadPin(USER_Btn_GPIO_Port, USER_Btn_Pin) == 1) {
+		  	  if(oled_screen != 3) {
+		  		oled_screen++;
+		  	  } else {
+		  		  oled_screen = 0;
+		  	  }
+	  		  oled_x_counter = 0;
+	  		  ssd1306_Fill(Black);
+	  		  oled_x_number_left = 10;
+	  		  oled_x_number_right = 20;
+	  		  sprintf(number_left, "%u", oled_x_number_left);
+	  		  sprintf(number_right, "%u", oled_x_number_right);
+	  		  oled_x_coordinate_left = 57;
+	  		  oled_x_coordinate_right = 115;
+	  	  }
 
 	  if(pause_for_led >= 500) {
 		  if(red < R_value) {
@@ -585,7 +604,99 @@ int main(void)
 		  }
 	  }
 
-	  //HAL_Delay(500);  // Opóźnienie 500 ms
+	  if ( HAL_GetTick() - last_time_update >= 100) {
+		  if (oled_screen == 0) {
+			  sprintf(red_str, "%u", red);
+			  sprintf(green_str, "%u", green);
+			  sprintf(blue_str, "%u", blue);
+			  ssd1306_Fill(Black);
+
+			  ssd1306_SetCursor(31, 1);
+			  ssd1306_WriteString("Red:", Font_11x18, White);
+			  ssd1306_WriteString(red_str, Font_11x18, White);
+
+			  ssd1306_SetCursor(29, 20);
+			  ssd1306_WriteString("Green:", Font_11x18, White);
+			  ssd1306_WriteString(green_str, Font_11x18, White);
+
+			  ssd1306_SetCursor(30, 40);
+			  ssd1306_WriteString("Blue:", Font_11x18, White);
+			  ssd1306_WriteString(blue_str, Font_11x18, White);
+
+			  ssd1306_UpdateScreen();
+		  }	else if(oled_screen == 1 || oled_screen == 2 || oled_screen == 3) {
+			  ssd1306_Line(22, 1, 22, 64, White);
+			  ssd1306_Line(19, 4, 22, 1, White);
+			  ssd1306_Line(22, 1, 25, 4, White);
+			  ssd1306_SetCursor(1, 10);
+			  ssd1306_WriteString("255", Font_6x8, White);
+			  ssd1306_SetCursor(1, 22);
+			  ssd1306_WriteString("170", Font_6x8, White);
+			  ssd1306_SetCursor(6, 35);
+			  ssd1306_WriteString("85", Font_6x8, White);
+			  ssd1306_SetCursor(oled_x_coordinate_left, 56);
+			  ssd1306_WriteString(number_left, Font_6x8, White);
+			  ssd1306_SetCursor(oled_x_coordinate_right, 56);
+			  ssd1306_WriteString(number_right, Font_6x8, White);
+			  ssd1306_Line(1, 50, 128, 50, White);
+			  ssd1306_Line(125, 47, 128, 50, White);
+			  ssd1306_Line(125, 53, 128, 50, White);
+			  ssd1306_SetCursor(122, 38);
+			  ssd1306_WriteString("t", Font_6x8, White);
+
+			  for (int i = 1; i < 11; i++) {
+				  ssd1306_Line(22 + i * 10, 48, 22 + i * 10, 52, White);
+			  }
+			  for (int i = 1; i < 4; i++) {
+				  ssd1306_Line(20, 13 * i, 24, 13 * i, White);
+			  }
+
+			  if(oled_x_counter + 23 == 129) {
+				  ssd1306_Fill(Black);
+				  oled_x_counter = 0;
+				  oled_x_number_left = oled_x_number_left + 20;
+				  oled_x_number_right = oled_x_number_right + 20;
+				  sprintf(number_left, "%u", oled_x_number_left);
+				  sprintf(number_right, "%u", oled_x_number_right);
+
+				  if(oled_x_number_right >= 100) {
+					  oled_x_coordinate_right = 109;
+				  }
+				  if(oled_x_number_left >= 100) {
+					  oled_x_coordinate_left = 54;
+				  }
+				  if(oled_x_number_right >= 980) {
+					  oled_x_number_left = 10;
+					  oled_x_number_right = 20;
+					  oled_x_coordinate_left = 57;
+					  oled_x_coordinate_right = 115;
+					  sprintf(number_left, "%u", oled_x_number_left);
+					  sprintf(number_right, "%u", oled_x_number_right);
+				  }
+			  }
+
+			  ssd1306_SetCursor(31, 1);
+			  if (oled_screen == 1) {
+				  ssd1306_WriteString("Red", Font_6x8, White);
+			  } else if (oled_screen == 2) {
+				  ssd1306_WriteString("Green", Font_6x8, White);
+			  } else if (oled_screen == 3) {
+				  ssd1306_WriteString("Blue", Font_6x8, White);
+			  }
+			  if (oled_screen == 1) {
+				  ssd1306_DrawPixel(oled_x_counter + 23, 63 - map_value(red, 0, 255, 13, 50), White);
+			  } else if (oled_screen == 2) {
+				  ssd1306_DrawPixel(oled_x_counter + 23, 63 - map_value(green, 0, 255, 13, 50), White);
+			  } else if (oled_screen == 3) {
+				  ssd1306_DrawPixel(oled_x_counter + 23, 63 - map_value(blue, 0, 255, 13, 50), White);
+			  }
+			  oled_x_counter++;
+
+			  ssd1306_UpdateScreen();
+		  }
+		  last_time_update = HAL_GetTick();
+	  }
+
   }
   /* USER CODE END 3 */
 }
@@ -671,8 +782,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
