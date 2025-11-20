@@ -2,24 +2,24 @@
 
 
 // Define stepper pins
-#define STEP_PIN_MOTOR_1 0      // Step pin
-#define DIR_PIN_MOTOR_1 2       // Direction pin
+#define STEP_PIN_MOTOR_1 16      // Step pin
+#define DIR_PIN_MOTOR_1 4       // Direction pin
 
-#define STEP_PIN_MOTOR_2 17      // Step pin
-#define DIR_PIN_MOTOR_2 5       // Direction pin
+#define STEP_PIN_MOTOR_2 2      // Step pin
+#define DIR_PIN_MOTOR_2 15       // Direction pin
 
-#define STEP_PIN_MOTOR_3 12      // Step pin
-#define DIR_PIN_MOTOR_3 13       // Direction pin
+#define STEP_PIN_MOTOR_3 7      // Step pin
+#define DIR_PIN_MOTOR_3 6       // Direction pin
 
 // Microstepping control pins
-#define MS1_PIN_MOTOR_1 16
-#define MS2_PIN_MOTOR_1 4
+// #define MS1_PIN_MOTOR_1 16
+// #define MS2_PIN_MOTOR_1 4
 
-#define MS1_PIN_MOTOR_2 18
-#define MS2_PIN_MOTOR_2 19
+// #define MS1_PIN_MOTOR_2 18
+// #define MS2_PIN_MOTOR_2 19
 
-#define MS1_PIN_MOTOR_3 23
-#define MS2_PIN_MOTOR_3 21
+// #define MS1_PIN_MOTOR_3 23
+// #define MS2_PIN_MOTOR_3 21
 
 // Steps per revolution for the motor
 const float stepsPerRevolution = 200;

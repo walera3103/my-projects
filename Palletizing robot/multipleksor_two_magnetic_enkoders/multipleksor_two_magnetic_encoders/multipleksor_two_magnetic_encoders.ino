@@ -26,7 +26,7 @@ void PCA9548A(uint8_t bus){
   Wire.beginTransmission(0x70);  // PCA9548A address
   Wire.write(1 << bus);          // send byte to select bus
   Wire.endTransmission();
-  delay(1);
+  delay(5);
   //Serial.print(bus);
 }
 
@@ -38,19 +38,21 @@ void setup() {
 
 void loop() {
   PCA9548A(counter);
+  encoder.begin();
   encoder_check(angle_encoder_1, counter, deg_encoder_1);
   counter = 1;
   PCA9548A(counter);
+  encoder.begin();
   encoder_check(angle_encoder_2, counter, deg_encoder_2);
   counter = 0;
 
-  // int angle = encoder.rawAngle();      // читає “сирий” кут (0–4095)
-  // float deg = angle * 360.0 / 4096.0;  // перетворюємо в градуси
+  int angle = encoder.rawAngle();      // читає “сирий” кут (0–4095)
+  float deg = angle * 360.0 / 4096.0;  // перетворюємо в градуси
 
-  // Serial.print("Raw: ");
-  // Serial.print(angle);
-  // Serial.print("   Deg: ");
-  // Serial.println(deg, 2);
+  Serial.print("Raw: ");
+  Serial.print(angle);
+  Serial.print("   Deg: ");
+  Serial.println(deg, 2);
 
-  //delay(1000);
+  delay(1000);
 }
