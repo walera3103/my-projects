@@ -34,14 +34,15 @@ float speedStepsPerSec = (microstepSetting * stepsPerRevolution * desiredRPM) / 
 float Max_Speed_StepsPerSec = (microstepSetting * stepsPerRevolution * MaxRPM) / 60.0;
 
 // Початкові значення цілі для 5 моторів
-int target_1_point = 20000;
-int target_2_point = 20000;
-int target_3_point = 20000;
-int target_4_point = 20000;
-int target_5_point = 20000;
+int target_1_point;
+int target_2_point;
+int target_3_point;
+int target_4_point;
+int target_5_point;
 const int range = 500;
 const int hysteresis_range = 800;
 
+// Глобальні змінні
 int previous_reducer_1_point;
 int previous_reducer_2_point;
 int previous_reducer_3_point;
@@ -52,31 +53,34 @@ int actual_reducer_2_point;
 int actual_reducer_3_point;
 int actual_reducer_4_point;
 int actual_reducer_5_point;
-int previous_encoder_1_point = 0;
-int previous_encoder_2_point = 0;
-int previous_encoder_3_point = 0;
-int previous_encoder_4_point = 0;
-int previous_encoder_5_point = 0;
-int actual_encoder_1_point = 0;
-int actual_encoder_2_point = 0;
-int actual_encoder_3_point = 0;
-int actual_encoder_4_point = 0;
-int actual_encoder_5_point = 0;
+int previous_encoder_1_point;
+int previous_encoder_2_point;
+int previous_encoder_3_point;
+int previous_encoder_4_point;
+int previous_encoder_5_point;
+int actual_encoder_1_point;
+int actual_encoder_2_point;
+int actual_encoder_3_point;
+int actual_encoder_4_point;
+int actual_encoder_5_point;
 
 AccelStepper* steppers[] = { &stepper_1, &stepper_2, &stepper_3, &stepper_4, &stepper_5 };
-int actual_encoder_points[] = { actual_encoder_1_point, actual_encoder_2_point, actual_encoder_3_point, actual_encoder_4_point, actual_encoder_5_point };
-int previous_encoder_points[] = { previous_encoder_1_point, previous_encoder_2_point, previous_encoder_3_point, previous_encoder_4_point, previous_encoder_5_point };
-int actual_reducer_points[] = { actual_reducer_1_point, actual_reducer_2_point, actual_reducer_3_point, actual_reducer_4_point, actual_reducer_5_point };
-int previous_reducer_points[] = {previous_reducer_1_point, previous_reducer_2_point, previous_reducer_3_point, previous_reducer_4_point, previous_reducer_5_point};
+
+// Масиви вказівників на окремі змінні
+int* actual_encoder_points[] = { &actual_encoder_1_point, &actual_encoder_2_point, &actual_encoder_3_point, &actual_encoder_4_point, &actual_encoder_5_point };
+int* previous_encoder_points[] = { &previous_encoder_1_point, &previous_encoder_2_point, &previous_encoder_3_point, &previous_encoder_4_point, &previous_encoder_5_point };
+int* actual_reducer_points[] = { &actual_reducer_1_point, &actual_reducer_2_point, &actual_reducer_3_point, &actual_reducer_4_point, &actual_reducer_5_point };
+int* previous_reducer_points[] = { &previous_reducer_1_point, &previous_reducer_2_point, &previous_reducer_3_point, &previous_reducer_4_point, &previous_reducer_5_point };
+int* targets[] { &target_1_point, &target_2_point, &target_3_point, &target_4_point, &target_5_point };
 
 int target_points[] = { target_1_point, target_2_point, target_3_point, target_4_point, target_5_point };
 bool motor_moving[5] = { false, false, false, false, false };
 int motor_direction[5] = { 0, 0, 0, 0, 0 };
-char str[11];
 
+char str[11];
 unsigned long lastEncoderRead = 0;
 unsigned long lastControlUpdate = 0;
-unsigned long one_second_counter = 0;
+unsigned long lastSaveCheck = 0;
 int delta;
 
 // Динамічні межі для калібрування
@@ -86,37 +90,25 @@ bool calibration_mode = false;
 
 String serialBuffer = "";
 bool newData = false;
-bool is_log_cleare = false;
 bool is_card_here = true;
-bool is_this_first_eteration = true;
 
 void PCA9548A(uint8_t bus) {
   Wire.beginTransmission(0x70);
   Wire.write(1 << bus);
   Wire.endTransmission();
-  delay(2);
+  delay(1);
 }
 
 void writeFile(fs::FS &fs, const char * path, const char * message){
   File file = fs.open(path, FILE_WRITE);
-  if(!file){
-    Serial.println("Failed to open file for writing");
-    return;
-  }
-  if(file.print(message)){
-    Serial.println("File written");
-  } else {
-    Serial.println("Write failed");
-  }
+  if(!file) return;
+  file.print(message);
   file.close();
 }
 
 void appendFile(fs::FS &fs, const char * path, const char * message, bool with_new_line){
   File file = fs.open(path, FILE_APPEND);
-  if(!file){
-    Serial.println("Failed to open file for appending");
-    return;
-  }
+  if(!file) return;
   if (with_new_line) {
     file.println(message);
   } else {
@@ -141,7 +133,7 @@ bool loadPositionsAndLimitsFromLog() {
     }
     file.close();
     
-    // Шукаємо позиції для кожного мотора
+    // Для кожного мотору: знайшли останнє входження і встановили reducer.
     for (int i = 0; i < 5; i++) {
         String searchString = "reducer position " + String(i + 1) + ": ";
         int startIndex = fileContent.lastIndexOf(searchString);
@@ -156,17 +148,49 @@ bool loadPositionsAndLimitsFromLog() {
             
             int position = positionStr.toInt();
             
-            if (position >= reducer_min_value[i] && position <= reducer_max_value[i]) {
-                actual_reducer_points[i] = position;
-                previous_reducer_points[i] = position;
+            if (position >= 0 && position <= reducer_max_value[i]) {
+                *actual_reducer_points[i] = position;
+                *previous_reducer_points[i] = position;
+                
+                // Синхронізуємо previous_encoder та actual_encoder з реальним значенням енкодера
+                PCA9548A(i);
+                int ang = encoder.rawAngle();
+                *previous_encoder_points[i] = ang;
+                *actual_encoder_points[i] = ang;
+                
                 Serial.print("Loaded position for motor ");
                 Serial.print(i + 1);
                 Serial.print(": ");
-                Serial.println(position);
+                Serial.print(position);
+                Serial.print(" (encoder=");
+                Serial.print(ang);
+                Serial.println(")");
+            } else {
+                // якщо парсинг не дав коректного — ініціалізуємо нулями
+                *actual_reducer_points[i] = 0;
+                *previous_reducer_points[i] = 0;
+                PCA9548A(i);
+                int ang = encoder.rawAngle();
+                *previous_encoder_points[i] = ang;
+                *actual_encoder_points[i] = ang;
+                Serial.print("Invalid position in file for motor ");
+                Serial.print(i + 1);
+                Serial.println(", set to 0");
             }
+        } else {
+            // немає запису — ініціалізуємо нулями та синхронізуємо енкодер
+            *actual_reducer_points[i] = 0;
+            *previous_reducer_points[i] = 0;
+            PCA9548A(i);
+            int ang = encoder.rawAngle();
+            *previous_encoder_points[i] = ang;
+            *actual_encoder_points[i] = ang;
+            Serial.print("No entry for motor ");
+            Serial.print(i + 1);
+            Serial.println(", set to 0");
         }
     }
-
+    
     // Шукаємо межі калібрування
     for (int i = 0; i < 5; i++) {
         String minSearchString = "calibration min " + String(i + 1) + ": ";
@@ -201,282 +225,290 @@ bool loadPositionsAndLimitsFromLog() {
     return true;
 }
 
-// Функція збереження позицій та меж
+// Оптимізована функція збереження позицій та меж
 void savePositionsAndLimitsToSD() {
     if (!is_card_here) return;
     
-    writeFile(SD, "/log.txt", "");
+    // Буферизуємо всі дані перед записом
+    String saveData = "";
     for (int i = 0; i < 5; i++) {
-        appendFile(SD, "/log.txt", "reducer position ", false);
-        memset(str, 0, sizeof(str));
-        sprintf(str, "%d", i + 1);
-        appendFile(SD, "/log.txt", str, false);
-        appendFile(SD, "/log.txt", ": ", false);
-        memset(str, 0, sizeof(str));
-        sprintf(str, "%d", actual_reducer_points[i]);
-        appendFile(SD, "/log.txt", str, true);
-
-        appendFile(SD, "/log.txt", "calibration min ", false);
-        memset(str, 0, sizeof(str));
-        sprintf(str, "%d", i + 1);
-        appendFile(SD, "/log.txt", str, false);
-        appendFile(SD, "/log.txt", ": ", false);
-        memset(str, 0, sizeof(str));
-        sprintf(str, "%d", reducer_min_value[i]);
-        appendFile(SD, "/log.txt", str, true);
-
-        appendFile(SD, "/log.txt", "calibration max ", false);
-        memset(str, 0, sizeof(str));
-        sprintf(str, "%d", i + 1);
-        appendFile(SD, "/log.txt", str, false);
-        appendFile(SD, "/log.txt", ": ", false);
-        memset(str, 0, sizeof(str));
-        sprintf(str, "%d", reducer_max_value[i]);
-        appendFile(SD, "/log.txt", str, true);
+        saveData += "reducer position ";
+        saveData += String(i + 1);
+        saveData += ": ";
+        saveData += String(*actual_reducer_points[i]);
+        saveData += "\n";
+        
+        saveData += "calibration min ";
+        saveData += String(i + 1);
+        saveData += ": ";
+        saveData += String(reducer_min_value[i]);
+        saveData += "\n";
+        
+        saveData += "calibration max ";
+        saveData += String(i + 1);
+        saveData += ": ";
+        saveData += String(reducer_max_value[i]);
+        saveData += "\n";
     }
+    
+    // Один запис у файл
+    writeFile(SD, "/log.txt", saveData.c_str());
     Serial.println("Positions and calibration limits saved to SD");
 }
 
 void setup() {
-  Serial.begin(115200);
-  Wire.begin(21, 22);
-  encoder.begin();
+    Serial.begin(115200);
+    Wire.begin(21, 22);
+    encoder.begin();
 
-  pinMode(0, OUTPUT);
-  digitalWrite(0, LOW);
+    pinMode(0, OUTPUT);
+    digitalWrite(0, LOW);
 
-  if(!SD.begin(5)){
-    Serial.println("Card Mount Failed");
-    is_card_here = false;
-    return;
-  }
-  uint8_t cardType = SD.cardType();
-
-  if(cardType == CARD_NONE){
-    Serial.println("No SD card attached");
-    is_card_here = false;
-    return;
-  }
-
-  // Завантаження позицій та меж
-  if (is_card_here) {
-    if (SD.exists("/log.txt")) {
-      loadPositionsAndLimitsFromLog();
+    // Ініціалізація SD карти
+    if(!SD.begin(5)){
+        Serial.println("Card Mount Failed");
+        is_card_here = false;
+    } else {
+        uint8_t cardType = SD.cardType();
+        if(cardType == CARD_NONE){
+            Serial.println("No SD card attached");
+            is_card_here = false;
+        } else {
+            Serial.println("SD card initialized successfully");
+        }
     }
-  }
 
-  for (int i = 0; i < 5; i++) {
-    steppers[i]->setMaxSpeed(Max_Speed_StepsPerSec);
-    steppers[i]->setSpeed(0);
-  }
-
-  if(!is_card_here) {
-    while(true) {
-      for (int i = 0; i < 5; i++) {
-        steppers[i]->runSpeed();
-      }
+    // Завантаження позицій та меж
+    if (is_card_here && SD.exists("/log.txt")) {
+        if (!loadPositionsAndLimitsFromLog()) {
+            Serial.println("Using default positions and limits");
+        }
+    } else {
+        // Якщо немає файлу — ініціалізуємо енкодери поточними значеннями
+        for (int i = 0; i < 5; i++) {
+            PCA9548A(i);
+            int ang = encoder.rawAngle();
+            *previous_encoder_points[i] = ang;
+            *actual_encoder_points[i] = ang;
+            *actual_reducer_points[i] = 0;
+            *previous_reducer_points[i] = 0;
+        }
+        Serial.println("Using default positions and limits");
     }
-  }
-  
-  Serial.println("System initialized - 5 Motors Control with Calibration");
-  Serial.println("Current positions and limits:");
-  for (int i = 0; i < 5; i++) {
-    Serial.print("Motor ");
-    Serial.print(i + 1);
-    Serial.print(" - Pos: ");
-    Serial.print(actual_reducer_points[i]);
-    Serial.print(" | Min: ");
-    Serial.print(reducer_min_value[i]);
-    Serial.print(" | Max: ");
-    Serial.println(reducer_max_value[i]);
-  }
+
+    // Ініціалізація моторів
+    for (int i = 0; i < 5; i++) {
+        steppers[i]->setMaxSpeed(Max_Speed_StepsPerSec);
+        steppers[i]->setSpeed(0);
+
+        target_points[i] = *actual_reducer_points[i];
+    }
+
+    Serial.println("System initialized - 5 Motors Control with Calibration");
+    Serial.println("Current positions and limits:");
+    for (int i = 0; i < 5; i++) {
+        Serial.print("Motor ");
+        Serial.print(i + 1);
+        Serial.print(" - Pos: ");
+        Serial.print(*actual_reducer_points[i]);
+        Serial.print(" | Min: ");
+        Serial.print(reducer_min_value[i]);
+        Serial.print(" | Max: ");
+        Serial.println(reducer_max_value[i]);
+    }
 }
 
 void parseSerialData() {
-  if (newData) {
-    // Команди для звичайного режиму
-    if (serialBuffer.startsWith("motor")) {
-      int motorNumber = serialBuffer.charAt(5) - '1';
-      if (motorNumber >= 0 && motorNumber < 5) {
-        int spaceIndex = serialBuffer.indexOf(' ');
-        if (spaceIndex != -1) {
-          long newTarget = serialBuffer.substring(spaceIndex + 1).toInt();
-          // Обмежуємо в звичайному режимі, в калібрувальному - ні
-          if (!calibration_mode) {
-            newTarget = constrain(newTarget, reducer_min_value[motorNumber], reducer_max_value[motorNumber]);
-          }
-          target_points[motorNumber] = newTarget;
-          
-          Serial.print("Motor ");
-          Serial.print(motorNumber + 1);
-          Serial.print(" target set to: ");
-          Serial.println(newTarget);
+    if (newData) {
+        // Команди для звичайного режиму
+        if (serialBuffer.startsWith("motor")) {
+            int motorNumber = serialBuffer.charAt(5) - '1';
+            if (motorNumber >= 0 && motorNumber < 5) {
+                int spaceIndex = serialBuffer.indexOf(' ');
+                if (spaceIndex != -1) {
+                    long newTarget = serialBuffer.substring(spaceIndex + 1).toInt();
+                    // Обмежуємо в звичайному режимі, в калібрувальному - ні
+                    if (!calibration_mode) {
+                        newTarget = constrain(newTarget, reducer_min_value[motorNumber], reducer_max_value[motorNumber]);
+                    }
+                    target_points[motorNumber] = newTarget;
+                    Serial.print("Motor ");
+                    Serial.print(motorNumber + 1);
+                    Serial.print(" target set to: ");
+                    Serial.println(newTarget);
+                }
+            }
         }
-      }
+        // Команди для калібрування
+        else if (serialBuffer.startsWith("calibration ")) {
+            if (serialBuffer.indexOf("start") != -1) {
+                calibration_mode = true;
+                Serial.println("CALIBRATION MODE STARTED - limits disabled");
+            }
+            else if (serialBuffer.indexOf("stop") != -1) {
+                calibration_mode = false;
+                Serial.println("CALIBRATION MODE STOPPED - limits enabled");
+                // Зберігаємо нові межі
+                savePositionsAndLimitsToSD();
+            }
+            else if (serialBuffer.startsWith("calibration set_min ")) {
+                int motorNumber = serialBuffer.charAt(20) - '1';
+                if (motorNumber >= 0 && motorNumber < 5) {
+                    reducer_min_value[motorNumber] = *actual_reducer_points[motorNumber];
+                    Serial.print("Motor ");
+                    Serial.print(motorNumber + 1);
+                    Serial.print(" min limit set to: ");
+                    Serial.println(reducer_min_value[motorNumber]);
+                }
+            }
+            else if (serialBuffer.startsWith("calibration set_max ")) {
+                int motorNumber = serialBuffer.charAt(20) - '1';
+                if (motorNumber >= 0 && motorNumber < 5) {
+                    reducer_max_value[motorNumber] = *actual_reducer_points[motorNumber];
+                    Serial.print("Motor ");
+                    Serial.print(motorNumber + 1);
+                    Serial.print(" max limit set to: ");
+                    Serial.println(reducer_max_value[motorNumber]);
+                }
+            }
+        }
+        serialBuffer = "";
+        newData = false;
     }
-    // Команди для калібрування
-    else if (serialBuffer.startsWith("calibration ")) {
-      if (serialBuffer.indexOf("start") != -1) {
-        calibration_mode = true;
-        Serial.println("CALIBRATION MODE STARTED - limits disabled");
-      }
-      else if (serialBuffer.indexOf("stop") != -1) {
-        calibration_mode = false;
-        Serial.println("CALIBRATION MODE STOPPED - limits enabled");
-        
-        // Зберігаємо нові межі
-        savePositionsAndLimitsToSD();
-      }
-      else if (serialBuffer.startsWith("calibration set_min ")) {
-        int motorNumber = serialBuffer.charAt(20) - '1';
-        if (motorNumber >= 0 && motorNumber < 5) {
-          reducer_min_value[motorNumber] = actual_reducer_points[motorNumber];
-          Serial.print("Motor ");
-          Serial.print(motorNumber + 1);
-          Serial.print(" min limit set to: ");
-          Serial.println(reducer_min_value[motorNumber]);
-        }
-      }
-      else if (serialBuffer.startsWith("calibration set_max ")) {
-        int motorNumber = serialBuffer.charAt(20) - '1';
-        if (motorNumber >= 0 && motorNumber < 5) {
-          reducer_max_value[motorNumber] = actual_reducer_points[motorNumber];
-          Serial.print("Motor ");
-          Serial.print(motorNumber + 1);
-          Serial.print(" max limit set to: ");
-          Serial.println(reducer_max_value[motorNumber]);
-        }
-      }
-    }
-    
-    serialBuffer = "";
-    newData = false;
-  }
 }
 
 void loop() {
-  while (Serial.available()) {
-    char c = Serial.read();
-    if (c == '\n') {
-      newData = true;
-      parseSerialData();
-    } else {
-      serialBuffer += c;
-    }
-  }
-
-  unsigned long now = millis();
-
-  // --- Читання енкодерів ---
-  if (now - lastEncoderRead >= 10) {
-    for (int i = 0; i < 5; i++) {
-      PCA9548A(i);
-      actual_encoder_points[i] = encoder.rawAngle();
-
-      delta = actual_encoder_points[i] - previous_encoder_points[i];
-      if (delta > 2048) delta -= 4096;
-      else if (delta < -2048) delta += 4096;
-
-      if (abs(delta) < 2) delta = 0;
-
-      actual_reducer_points[i] += delta;
-
-      // Обмеження позиції тільки в звичайному режимі
-      if (!calibration_mode) {
-        if (actual_reducer_points[i] > reducer_max_value[i]) {
-          actual_reducer_points[i] = reducer_max_value[i];
-        } else if (actual_reducer_points[i] < reducer_min_value[i]) {
-          actual_reducer_points[i] = reducer_min_value[i];
+    // Обробка Serial даних
+    while (Serial.available()) {
+        char c = Serial.read();
+        if (c == '\n') {
+            newData = true;
+            parseSerialData();
+        } else {
+            serialBuffer += c;
         }
-      }
-
-      previous_encoder_points[i] = actual_encoder_points[i];
     }
-    lastEncoderRead = now;
-  }
 
-  // --- Керування моторами ---
-  if (now - lastControlUpdate >= 20) {
-    for (int i = 0; i < 5; i++) {
-      int error = target_points[i] - actual_reducer_points[i];
-      int abs_error = abs(error);
-      
-      // Перевірка меж тільки в звичайному режимі
-      if (!calibration_mode) {
-        bool at_min_limit = (actual_reducer_points[i] <= reducer_min_value[i] && error < 0);
-        bool at_max_limit = (actual_reducer_points[i] >= reducer_max_value[i] && error > 0);
+    unsigned long now = millis();
+
+    // --- Читання енкодерів (кожні 10 мс) ---
+    if (now - lastEncoderRead >= 10) {
+        for (int i = 0; i < 5; i++) {
+            PCA9548A(i);
+            *actual_encoder_points[i] = encoder.rawAngle();
+
+            delta = *actual_encoder_points[i] - *previous_encoder_points[i];
+            if (delta > 2048) delta -= 4096;
+            else if (delta < -2048) delta += 4096;
+            if (abs(delta) < 2) delta = 0;
+
+            *actual_reducer_points[i] += delta;
+
+            // Обмеження позиції тільки в звичайному режимі
+            if (!calibration_mode) {
+                if (*actual_reducer_points[i] > reducer_max_value[i]) {
+                    *actual_reducer_points[i] = reducer_max_value[i];
+                } else if (*actual_reducer_points[i] < reducer_min_value[i]) {
+                    *actual_reducer_points[i] = reducer_min_value[i];
+                }
+            }
+
+            *previous_encoder_points[i] = *actual_encoder_points[i];
+        }
+        lastEncoderRead = now;
+    }
+
+    // --- Керування моторами (кожні 20 мс) ---
+    if (now - lastControlUpdate >= 20) {
+        for (int i = 0; i < 5; i++) {
+            int error = target_points[i] - *actual_reducer_points[i];
+            int abs_error = abs(error);
+            
+            // Перевірка меж тільки в звичайному режимі
+            bool at_min_limit = false;
+            bool at_max_limit = false;
+            
+            if (!calibration_mode) {
+                at_min_limit = (*actual_reducer_points[i] <= reducer_min_value[i] && error < 0);
+                at_max_limit = (*actual_reducer_points[i] >= reducer_max_value[i] && error > 0);
+            }
+            
+            if (at_min_limit || at_max_limit) {
+                steppers[i]->setSpeed(0);
+                motor_moving[i] = false;
+                motor_direction[i] = 0;
+                continue;
+            }
+            
+            if (motor_moving[i]) {
+                if (abs_error <= range) {
+                    steppers[i]->setSpeed(0);
+                    motor_moving[i] = false;
+                    motor_direction[i] = 0;
+                }
+            } else {
+                if (abs_error > hysteresis_range) {
+                    int new_direction = (error > 0) ? 1 : -1;
+                    float currentSpeed = (new_direction > 0) ? speedStepsPerSec : -speedStepsPerSec;
+                    steppers[i]->setSpeed(currentSpeed);
+                    motor_moving[i] = true;
+                    motor_direction[i] = new_direction;
+                }
+            }
+        }
+        lastControlUpdate = now;
+    }
+
+    // --- Перевірка необхідності збереження (кожні 1000 мс) ---
+    if (now - lastSaveCheck >= 1000) {
+        bool should_save = false;
         
-        if (at_min_limit || at_max_limit) {
-          steppers[i]->setSpeed(0);
-          motor_moving[i] = false;
-          motor_direction[i] = 0;
-          continue;
+        for (int i = 0; i < 5; i++) {
+            if (abs(*actual_reducer_points[i] - *previous_reducer_points[i]) > range) {
+                should_save = true;
+                *previous_reducer_points[i] = *actual_reducer_points[i];
+            }
         }
-      }
-      
-      // Логіка керування
-      if (motor_moving[i]) {
-        if (abs_error <= range) {
-          steppers[i]->setSpeed(0);
-          motor_moving[i] = false;
-          motor_direction[i] = 0;
+        
+        if (should_save) {
+            savePositionsAndLimitsToSD();
         }
-      } else {
-        if (abs_error > hysteresis_range) {
-          int new_direction = (error > 0) ? 1 : -1;
-          float currentSpeed = (new_direction > 0) ? speedStepsPerSec : -speedStepsPerSec;
-          steppers[i]->setSpeed(currentSpeed);
-          motor_moving[i] = true;
-          motor_direction[i] = new_direction;
-        }
-      }
+        
+        lastSaveCheck = now;
     }
-    lastControlUpdate = now;
-  }
 
-  // Збереження позицій
-  for (int i = 0; i < 5; i++) {
-    if ((is_this_first_eteration == true) || ((abs(actual_reducer_points[i] - previous_reducer_points[i]) > range && now - one_second_counter >= 1000))) {
-      savePositionsAndLimitsToSD();
-      for (int k = 0; k < 5; k++) {
-        previous_reducer_points[k] = actual_reducer_points[k];
-      }
-      is_this_first_eteration = false;
-      one_second_counter = now;
-      break;
-    }
-  }
-
-  // --- Виконання кроків ---
-  for (int i = 0; i < 5; i++) {
-    steppers[i]->runSpeed();
-  }
-
-  // --- Відладка ---
-  static unsigned long lastDebug = 0;
-  if (now - lastDebug >= 1000) {
-    Serial.print("Mode: ");
-    Serial.println(calibration_mode ? "CALIBRATION" : "NORMAL");
+    // --- Виконання кроків ---
     for (int i = 0; i < 5; i++) {
-      int current_error = target_points[i] - actual_reducer_points[i];
-      float currentSpeed = steppers[i]->speed();
-      
-      Serial.print("Motor ");
-      Serial.print(i + 1);
-      Serial.print(" | Target: ");
-      Serial.print(target_points[i]);
-      Serial.print(" | Actual: ");
-      Serial.print(actual_reducer_points[i]);
-      Serial.print(" | Min: ");
-      Serial.print(reducer_min_value[i]);
-      Serial.print(" | Max: ");
-      Serial.print(reducer_max_value[i]);
-      Serial.print(" | Error: ");
-      Serial.print(abs(current_error));
-      Serial.print(" | Moving: ");
-      Serial.println(motor_moving[i] ? "YES" : "NO");
+        steppers[i]->runSpeed();
     }
-    Serial.println("========================================");
-    lastDebug = now;
-  }
+
+    // --- Відладка (кожну секунду) ---
+    static unsigned long lastDebug = 0;
+    if (now - lastDebug >= 1000) {
+        Serial.print("Mode: ");
+        Serial.println(calibration_mode ? "CALIBRATION" : "NORMAL");
+        for (int i = 0; i < 5; i++) {
+            int current_error = target_points[i] - *actual_reducer_points[i];
+            float currentSpeed = steppers[i]->speed();
+            
+            Serial.print("Motor ");
+            Serial.print(i + 1);
+            Serial.print(" | Target: ");
+            Serial.print(target_points[i]);
+            Serial.print(" | Actual: ");
+            Serial.print(*actual_reducer_points[i]);
+            Serial.print(" | Min: ");
+            Serial.print(reducer_min_value[i]);
+            Serial.print(" | Max: ");
+            Serial.print(reducer_max_value[i]);
+            Serial.print(" | Error: ");
+            Serial.print(abs(current_error));
+            Serial.print(" | Speed: ");
+            Serial.print(currentSpeed);
+            Serial.print(" | State: ");
+            Serial.println(motor_moving[i] ? "MOVING" : "STOPPED");
+        }
+        Serial.println("========================================");
+        lastDebug = now;
+    }
 }

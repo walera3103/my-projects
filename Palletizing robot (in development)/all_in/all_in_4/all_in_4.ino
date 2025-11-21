@@ -53,22 +53,24 @@ volatile int actual_reducer_2_point;
 volatile int actual_reducer_3_point;
 volatile int actual_reducer_4_point;
 volatile int actual_reducer_5_point;
-volatile int previous_encoder_1_point = 0;
-volatile int previous_encoder_2_point = 0;
-volatile int previous_encoder_3_point = 0;
-volatile int previous_encoder_4_point = 0;
-volatile int previous_encoder_5_point = 0;
-volatile int actual_encoder_1_point = 0;
-volatile int actual_encoder_2_point = 0;
-volatile int actual_encoder_3_point = 0;
-volatile int actual_encoder_4_point = 0;
-volatile int actual_encoder_5_point = 0;
+volatile int previous_encoder_1_point;
+volatile int previous_encoder_2_point;
+volatile int previous_encoder_3_point;
+volatile int previous_encoder_4_point;
+volatile int previous_encoder_5_point;
+volatile int actual_encoder_1_point;
+volatile int actual_encoder_2_point;
+volatile int actual_encoder_3_point;
+volatile int actual_encoder_4_point;
+volatile int actual_encoder_5_point;
 
 AccelStepper* steppers[] = { &stepper_1, &stepper_2, &stepper_3, &stepper_4, &stepper_5 };
+
+// Масиви вказівників на окремі змінні
 volatile int* actual_encoder_points[] = { &actual_encoder_1_point, &actual_encoder_2_point, &actual_encoder_3_point, &actual_encoder_4_point, &actual_encoder_5_point };
 volatile int* previous_encoder_points[] = { &previous_encoder_1_point, &previous_encoder_2_point, &previous_encoder_3_point, &previous_encoder_4_point, &previous_encoder_5_point };
 volatile int* actual_reducer_points[] = { &actual_reducer_1_point, &actual_reducer_2_point, &actual_reducer_3_point, &actual_reducer_4_point, &actual_reducer_5_point };
-volatile int previous_reducer_points[] = {previous_reducer_1_point, previous_reducer_2_point, previous_reducer_3_point, previous_reducer_4_point, previous_reducer_5_point};
+volatile int* previous_reducer_points[] = { &previous_reducer_1_point, &previous_reducer_2_point, &previous_reducer_3_point, &previous_reducer_4_point, &previous_reducer_5_point };
 
 volatile int target_points[] = { target_1_point, target_2_point, target_3_point, target_4_point, target_5_point };
 volatile bool motor_moving[5] = { false, false, false, false, false };
@@ -115,6 +117,7 @@ void appendFile(fs::FS &fs, const char * path, const char * message, bool with_n
 }
 
 bool loadPositionsFromLog() {
+    
     Serial.println("Loading positions from log.txt...");
     
     File file = SD.open("/log.txt");
@@ -129,6 +132,7 @@ bool loadPositionsFromLog() {
     }
     file.close();
     
+    // Для кожного мотору: знайшли останнє входження і встановили reducer.
     for (int i = 0; i < 5; i++) {
         String searchString = "reducer position " + String(i + 1) + ": ";
         int startIndex = fileContent.lastIndexOf(searchString);
@@ -144,47 +148,101 @@ bool loadPositionsFromLog() {
             int position = positionStr.toInt();
             
             if (position >= 0 && position <= reducer_max_value) {
-                actual_reducer_points[i] = position;
-                previous_reducer_points[i] = position;
+                // Використовуємо розіменування вказівників
+                *actual_reducer_points[i] = position;
+                *previous_reducer_points[i] = position;
+
+                // --- ОГРОМНО ВАЖЛИВО ---
+                // Синхронізуємо previous_encoder та actual_encoder з реальним значенням енкодера
+                // щоб при першому читанні delta було коректним і не породжувало стрибків.
+                PCA9548A(i);
+                int ang = encoder.rawAngle();
+                *previous_encoder_points[i] = ang;
+                *actual_encoder_points[i] = ang;
+
                 Serial.print("Loaded position for motor ");
                 Serial.print(i + 1);
                 Serial.print(": ");
-                Serial.println(position);
+                Serial.print(position);
+                Serial.print("  (encoder=");
+                Serial.print(ang);
+                Serial.println(")");
+            } else {
+                // якщо парсинг не дав коректного — ініціалізуємо нулями
+                *actual_reducer_points[i] = 0;
+                *previous_reducer_points[i] = 0;
+                PCA9548A(i);
+                int ang = encoder.rawAngle();
+                *previous_encoder_points[i] = ang;
+                *actual_encoder_points[i] = ang;
+                Serial.print("Invalid position in file for motor ");
+                Serial.print(i + 1);
+                Serial.println(", set to 0");
             }
+        } else {
+            // немає запису — ініціалізуємо нулями та синхронізуємо енкодер
+            *actual_reducer_points[i] = 0;
+            *previous_reducer_points[i] = 0;
+            PCA9548A(i);
+            int ang = encoder.rawAngle();
+            *previous_encoder_points[i] = ang;
+            *actual_encoder_points[i] = ang;
+            Serial.print("No entry for motor ");
+            Serial.print(i + 1);
+            Serial.println(", set to 0");
         }
     }
     
     return true;
 }
 
-// Задача для збереження даних (працює в фоні)
+// у глобальному:
+// збільши розмір буфера, якщо потрібно
+const size_t SAVE_BUFFER_SIZE = 1024;
+char saveBuffer[SAVE_BUFFER_SIZE];
+
 void saveTask(void * parameter) {
-  char str[11];
-  uint8_t dummy; // Додаємо буфер для отримання даних
-  
-  for(;;) {
-    // Чекаємо сигнал для збереження
-    if (xQueueReceive(xSaveQueue, &dummy, portMAX_DELAY) == pdTRUE) {
+  uint8_t dummy;
+
+  for (;;) {
+    if (xQueueReceive(xSaveQueue, &dummy, portMAX_DELAY)) {
+
+      // ---------------------------------------------
+      // 1) Копіюємо дані під м’ютексом у локальний буфер
+      // ---------------------------------------------
+      String localData = "";
+
+      if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
+
+        for (int k = 0; k < 5; k++) {
+          localData += "reducer position ";
+          localData += (k + 1);
+          localData += ": ";
+          localData += String(*actual_reducer_points[k]);
+          localData += "\n";
+        }
+
+        xSemaphoreGive(xMutex);
+      }
+
+      // ---------------------------------------------
+      // 2) ПЕРЕЗАПИС ФАЙЛУ (truncate)
+      //    ВАЖЛИВО: БЕЗ м’ютекса!
+      // ---------------------------------------------
       if (is_card_here) {
-        // Захоплюємо м'ютекс для безпечного доступу до даних
-        if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
-          writeFile(SD, "/log.txt", "");
-          for (int k = 0; k < 5; k++) {
-            appendFile(SD, "/log.txt", "reducer position ", false);
-            memset(str, 0, sizeof(str));
-            sprintf(str, "%d", k + 1);
-            appendFile(SD, "/log.txt", str, false);
-            appendFile(SD, "/log.txt", ": ", false);
-            memset(str, 0, sizeof(str));
-            sprintf(str, "%d", actual_reducer_points[k]);
-            appendFile(SD, "/log.txt", str, true);
-          }
-          xSemaphoreGive(xMutex);
-          Serial.println("Data saved to SD (background)");
+        File file = SD.open("/log.txt", FILE_WRITE);  // перезапис!
+
+        if (file) {
+          file.print(localData);   // один великий запис
+          file.close();
+          Serial.println("File overwritten");
+        } else {
+          Serial.println("Failed to open file for rewrite");
         }
       }
     }
-    vTaskDelay(10 / portTICK_PERIOD_MS);
+
+    vTaskDelay(1);
   }
 }
 
@@ -194,7 +252,7 @@ void controlTask(void * parameter) {
   unsigned long lastControlUpdate = 0;
   unsigned long lastSaveCheck = 0;
   int delta;
-  uint8_t dummy = 1; // Додаємо буфер для надсилання
+  uint8_t dummy = 1;
   
   for(;;) {
     unsigned long now = millis();
@@ -204,38 +262,43 @@ void controlTask(void * parameter) {
       if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
         for (int i = 0; i < 5; i++) {
           PCA9548A(i);
-          actual_encoder_points[i] = encoder.rawAngle();
+          // Розіменування вказівника для отримання значення
+          *actual_encoder_points[i] = encoder.rawAngle();
 
-          delta = actual_encoder_points[i] - previous_encoder_points[i];
+          // Розіменування вказівників для обчислення delta
+          delta = *actual_encoder_points[i] - *previous_encoder_points[i];
           if (delta > 2048) delta -= 4096;
           else if (delta < -2048) delta += 4096;
           if (abs(delta) < 2) delta = 0;
 
-          actual_reducer_points[i] += delta;
+          // Оновлення позиції редуктора
+          *actual_reducer_points[i] += delta;
 
           // Обмеження позиції
-          if (actual_reducer_points[i] > reducer_max_value) {
-            actual_reducer_points[i] = reducer_max_value;
-          } else if (actual_reducer_points[i] < 0) {
-            actual_reducer_points[i] = 0;
+          if (*actual_reducer_points[i] > reducer_max_value) {
+            *actual_reducer_points[i] = reducer_max_value;
+          } else if (*actual_reducer_points[i] < 0) {
+            *actual_reducer_points[i] = 0;
           }
 
-          previous_encoder_points[i] = actual_encoder_points[i];
+          // Оновлення попереднього значення енкодера
+          *previous_encoder_points[i] = *actual_encoder_points[i];
         }
         xSemaphoreGive(xMutex);
       }
       lastEncoderRead = now;
     }
 
-    // --- Керування моторами (кожні 20 мс) ---
-    if (now - lastControlUpdate >= 20) {
+    // --- Керування моторами (кожні 10 ms) ---
+    if (now - lastControlUpdate >= 10) {
       if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
         for (int i = 0; i < 5; i++) {
-          int error = target_points[i] - actual_reducer_points[i];
+          // Розіменування для отримання значення
+          int error = target_points[i] - *actual_reducer_points[i];
           int abs_error = abs(error);
           
-          bool at_min_limit = (actual_reducer_points[i] <= 0 && error < 0);
-          bool at_max_limit = (actual_reducer_points[i] >= reducer_max_value && error > 0);
+          bool at_min_limit = (*actual_reducer_points[i] <= 0 && error < 0);
+          bool at_max_limit = (*actual_reducer_points[i] >= reducer_max_value && error > 0);
           
           if (at_min_limit || at_max_limit) {
             steppers[i]->setSpeed(0);
@@ -265,22 +328,21 @@ void controlTask(void * parameter) {
       lastControlUpdate = now;
     }
 
-    // --- Перевірка необхідності збереження (кожні 100 мс) ---
-    if (now - lastSaveCheck >= 100) {
+    // --- Перевірка необхідності збереження (кожні 1000 мс) ---
+    if (now - lastSaveCheck >= 1000) {
       bool should_save = false;
       
       if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
         for (int i = 0; i < 5; i++) {
-          if (abs(actual_reducer_points[i] - previous_reducer_points[i]) > range) {
+          if (abs(*actual_reducer_points[i] - *previous_reducer_points[i]) > range) {
             should_save = true;
-            previous_reducer_points[i] = actual_reducer_points[i];
+            *previous_reducer_points[i] = *actual_reducer_points[i];
           }
         }
         xSemaphoreGive(xMutex);
       }
       
       if (should_save) {
-        // Надсилаємо сигнал в задачу збереження (не блокуємо поточну задачу)
         xQueueSend(xSaveQueue, &dummy, 0);
       }
       
@@ -292,7 +354,7 @@ void controlTask(void * parameter) {
       steppers[i]->runSpeed();
     }
 
-    vTaskDelay(1 / portTICK_PERIOD_MS); // Невелика затримка для інших задач
+    vTaskDelay(1 / portTICK_PERIOD_MS);
   }
 }
 
@@ -316,9 +378,19 @@ void setup() {
     }
   }
 
-  // Завантаження позицій
+  // Завантаження позицій (без тасків — безпечне)
   if (is_card_here && SD.exists("/log.txt")) {
     loadPositionsFromLog();
+  } else {
+    // якщо немає файлу — ініціалізуємо енкодери поточними значеннями
+    for (int i = 0; i < 5; i++) {
+      PCA9548A(i);
+      int ang = encoder.rawAngle();
+      *previous_encoder_points[i] = ang;
+      *actual_encoder_points[i] = ang;
+      *actual_reducer_points[i] = 0;
+      *previous_reducer_points[i] = 0;
+    }
   }
 
   // Ініціалізація моторів
@@ -330,10 +402,9 @@ void setup() {
   // Створення м'ютексу для синхронізації
   xMutex = xSemaphoreCreateMutex();
   
-  // Створення черги для сигналів збереження (розмір елемента = 1 байт)
+  // Створення черги для сигналів збереження
   xSaveQueue = xQueueCreate(10, sizeof(uint8_t));
 
-  // Перевірка успішного створення об'єктів FreeRTOS
   if (xMutex == NULL) {
     Serial.println("Failed to create mutex");
     while(1);
@@ -346,23 +417,23 @@ void setup() {
 
   // Створення задач FreeRTOS
   xTaskCreatePinnedToCore(
-    controlTask,     // Функція задачі
-    "ControlTask",   // Ім'я задачі
-    10000,           // Розмір стеку
-    NULL,            // Параметри
-    3,               // Пріоритет (високий для керування моторами)
-    &xControlTaskHandle, // Handle задачі
-    1                // Ядро 1
+    controlTask,
+    "ControlTask",
+    10000,
+    NULL,
+    3,
+    &xControlTaskHandle,
+    1
   );
 
   xTaskCreatePinnedToCore(
-    saveTask,        // Функція задачі
-    "SaveTask",      // Ім'я задачі
-    8000,            // Розмір стеку
-    NULL,            // Параметри
-    1,               // Пріоритет (низький для збереження)
-    &xSaveTaskHandle, // Handle задачі
-    0                // Ядро 0
+    saveTask,
+    "SaveTask",
+    8000,
+    NULL,
+    1,
+    &xSaveTaskHandle,
+    0
   );
 
   Serial.println("System initialized with FreeRTOS - 5 Motors Control");
@@ -371,7 +442,7 @@ void setup() {
     Serial.print("Motor ");
     Serial.print(i + 1);
     Serial.print(": ");
-    Serial.println(actual_reducer_points[i]);
+    Serial.println(*actual_reducer_points[i]); // Розіменування
   }
 }
 
@@ -403,7 +474,6 @@ void parseSerialData() {
 }
 
 void loop() {
-  // Головний цикл тепер тільки для Serial communication
   while (Serial.available()) {
     char c = Serial.read();
     if (c == '\n') {
@@ -414,13 +484,12 @@ void loop() {
     }
   }
 
-  // Відладка (кожну секунду)
   static unsigned long lastDebug = 0;
   unsigned long now = millis();
   if (now - lastDebug >= 1000) {
     if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
       for (int i = 0; i < 5; i++) {
-        int current_error = target_points[i] - actual_reducer_points[i];
+        int current_error = target_points[i] - *actual_reducer_points[i]; // Розіменування
         float currentSpeed = steppers[i]->speed();
         
         Serial.print("Motor ");
@@ -428,7 +497,7 @@ void loop() {
         Serial.print(" | Target: ");
         Serial.print(target_points[i]);
         Serial.print(" | Actual: ");
-        Serial.print(actual_reducer_points[i]);
+        Serial.print(*actual_reducer_points[i]); // Розіменування
         Serial.print(" | Error: ");
         Serial.print(abs(current_error));
         Serial.print(" | Speed: ");
@@ -443,4 +512,7 @@ void loop() {
   }
 
   vTaskDelay(10 / portTICK_PERIOD_MS);
+
+  for (int i = 0; i < 5; i++) steppers[i]->runSpeed();
+
 }
