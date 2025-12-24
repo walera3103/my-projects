@@ -60,8 +60,8 @@ const int range = 100;
 const int hysteresis_range = 800;
 int delta;
 
-long min_limit[NUM_MOTORS];
-long max_limit[NUM_MOTORS];
+long min_limit[NUM_MOTORS] = {0,0,0,0,0};
+long max_limit[NUM_MOTORS] = {40950,40950,40950,40950,40950};
 
 unsigned long lastEncoderRead = 0;
 unsigned long lastControlUpdate = 0;
@@ -74,6 +74,18 @@ bool calibration_mode = false;
 bool request_log_write = false;
 
 bool initial_encoder_read_done = false;
+
+// Додайте ці прототипи функцій
+void writeFullLog();
+bool loadFromLog();
+void initializeEncodersFromSavedPositions();
+void emitStatusLines();
+void parseSerialData();
+void savePositionToSD(String pos_name);
+void removePositionFromSD(String pos_name);
+void listSavedPositions();
+void goToSavedPosition(String pos_name);
+void goToCoordinates(float x, float y);
 
 // ---------------------- File helpers ----------------------
 void writeFullLog() {
@@ -300,8 +312,198 @@ void parseSerialData() {
     Serial.println("EMERGENCY_STOP");
   }
 
+  else if (cmd.startsWith("SAVE_POS ")) {
+    String pos_name = cmd.substring(9);
+    pos_name.trim();
+    savePositionToSD(pos_name);  // Викликаємо нову функцію
+}
+  else if (cmd.startsWith("GO_TO_POS ")) {
+      String pos_name = cmd.substring(10);
+      pos_name.trim();
+      
+      // Завантажуємо позицію з файлу (вам потрібно буде реалізувати цю функцію)
+      goToSavedPosition(pos_name);
+  }
+  else if (cmd.startsWith("GO_TO_XY ")) {
+      // Обернена кінематика для руху до координат X,Y
+      int space1 = cmd.indexOf(' ');
+      int space2 = cmd.indexOf(' ', space1+1);
+      float x = cmd.substring(space1+1, space2).toFloat();
+      float y = cmd.substring(space2+1).toFloat();
+      
+      goToCoordinates(x, y);  // Функцію оберненої кінематики потрібно реалізувати
+  }
+  else if (cmd.equalsIgnoreCase("LIST_POS")) {
+      listSavedPositions();  // Функція для виводу списку збережених позицій
+  }
+
   serialBuffer = "";
   newData = false;
+}
+
+// Додайте ці функції:
+
+void savePositionToSD(String pos_name) {
+    // Спочатку видаляємо стару позицію з таким же іменем
+    removePositionFromSD(pos_name);
+    
+    // Потім додаємо нову
+    File file = SD.open("/log.txt", FILE_APPEND);
+    if(file){
+        file.print("SAVED_POS:");
+        file.print(pos_name);
+        file.print(":");
+        for(int i=0; i<NUM_MOTORS; i++){
+            file.print(actual_reducer_points[i]);
+            if(i < NUM_MOTORS-1) file.print(",");
+        }
+        file.println();
+        file.close();
+        
+        Serial.print("POS_SAVED:");
+        Serial.println(pos_name);
+    }
+}
+
+void removePositionFromSD(String pos_name) {
+    // Читаємо весь файл, виключаючи позицію з вказаним іменем
+    if(!SD.exists("/log.txt")) return;
+    
+    File original = SD.open("/log.txt", FILE_READ);
+    if(!original) return;
+    
+    // Створюємо тимчасовий файл
+    File temp = SD.open("/temp.txt", FILE_WRITE);
+    if(!temp) {
+        original.close();
+        return;
+    }
+    
+    while(original.available()){
+        String line = original.readStringUntil('\n');
+        line.trim();
+        
+        // Пропускаємо рядки з позицією, яку хочемо видалити
+        if(line.startsWith("SAVED_POS:")) {
+            int firstColon = line.indexOf(':');
+            int secondColon = line.indexOf(':', firstColon+1);
+            if(secondColon != -1) {
+                String existing_name = line.substring(firstColon+1, secondColon);
+                if(existing_name == pos_name) {
+                    continue; // Пропускаємо цей рядок
+                }
+            }
+        }
+        
+        // Записуємо всі інші рядки
+        if(line.length() > 0) {
+            temp.println(line);
+        }
+    }
+    
+    original.close();
+    temp.close();
+    
+    // Замінюємо оригінальний файл тимчасовим
+    SD.remove("/log.txt");
+    SD.rename("/temp.txt", "/log.txt");
+}
+
+void listSavedPositions() {
+    if(!SD.exists("/log.txt")) {
+        Serial.println("POSITION_LIST:");
+        return;
+    }
+    
+    File file = SD.open("/log.txt", FILE_READ);
+    if(!file) return;
+    
+    Serial.print("POSITION_LIST:");
+    bool first = true;
+    
+    while(file.available()){
+        String line = file.readStringUntil('\n');
+        line.trim();
+        
+        if(line.startsWith("SAVED_POS:")) {
+            int firstColon = line.indexOf(':');
+            int secondColon = line.indexOf(':', firstColon+1);
+            if(secondColon != -1) {
+                String pos_name = line.substring(firstColon+1, secondColon);
+                if(!first) {
+                    Serial.print(",");
+                }
+                Serial.print(pos_name);
+                first = false;
+            }
+        }
+    }
+    
+    Serial.println();
+    file.close();
+}
+
+void goToSavedPosition(String pos_name) {
+    // Завантажуємо позицію з файлу
+    if(!SD.exists("/log.txt")) {
+        Serial.println("POSITION_NOT_FOUND");
+        return;
+    }
+    
+    File file = SD.open("/log.txt", FILE_READ);
+    if(!file) return;
+    
+    while(file.available()){
+        String line = file.readStringUntil('\n');
+        line.trim();
+        
+        if(line.startsWith("SAVED_POS:")) {
+            int firstColon = line.indexOf(':');
+            int secondColon = line.indexOf(':', firstColon+1);
+            if(secondColon != -1) {
+                String existing_name = line.substring(firstColon+1, secondColon);
+                if(existing_name == pos_name) {
+                    // Знайшли позицію - парсимо координати
+                    String coords_str = line.substring(secondColon+1);
+                    int start_idx = 0;
+                    int comma_idx;
+                    
+                    for(int i=0; i<NUM_MOTORS; i++) {
+                        comma_idx = coords_str.indexOf(',', start_idx);
+                        if(comma_idx == -1 && i == NUM_MOTORS-1) {
+                            comma_idx = coords_str.length();
+                        }
+                        if(comma_idx != -1) {
+                            String coord_str = coords_str.substring(start_idx, comma_idx);
+                            target_points[i] = coord_str.toInt();
+                            start_idx = comma_idx + 1;
+                        }
+                    }
+                    
+                    file.close();
+                    Serial.print("MOVING_TO:");
+                    Serial.println(pos_name);
+                    return;
+                }
+            }
+        }
+    }
+    
+    file.close();
+    Serial.println("POSITION_NOT_FOUND");
+}
+
+void goToCoordinates(float x, float y) {
+    // Тут буде обернена кінематика
+    // ПОКИ ЩО ПРОСТО ПОВЕРТАЄМО ПЕРШІ 2 МОТОРИ В СЕРЕДНЄ ПОЛОЖЕННЯ
+    Serial.print("MOVING_TO_XY:");
+    Serial.print(x);
+    Serial.print(",");
+    Serial.println(y);
+    
+    // Тимчасово: встановлюємо середні позиції для перших двох моторів
+    target_points[0] = 20475;  // 180 градусів
+    target_points[1] = 20475;  // 180 градусів
 }
 
 // ---------------------- setup / loop ----------------------

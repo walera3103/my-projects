@@ -52,8 +52,10 @@ int previous_encoder_points[NUM_MOTORS];
 long actual_reducer_points[NUM_MOTORS]; // Початкові значення
 long previous_reducer_points[NUM_MOTORS];
 int target_points[NUM_MOTORS];
+int previus_error[NUM_MOTORS];
 bool motor_moving[NUM_MOTORS] = {false,false,false,false,false};
 bool previous_motor_moving[NUM_MOTORS] = {false,false,false,false,false};
+bool is_this_first_error_check[NUM_MOTORS] = {true,true,true,true,true};
 int motor_direction[NUM_MOTORS] = {0,0,0,0,0};
 
 const int range = 100;
@@ -74,6 +76,7 @@ bool calibration_mode = false;
 bool request_log_write = false;
 
 bool initial_encoder_read_done = false;
+//bool is_this_first_error_check = true;
 
 // ---------------------- File helpers ----------------------
 void writeFullLog() {
@@ -304,6 +307,16 @@ void parseSerialData() {
   newData = false;
 }
 
+void critical_error_script() {
+  if(!is_card_here) {
+    while(true) {
+      for (int i = 0; i < NUM_MOTORS; i++) {
+        steppers[i]->runSpeed();
+      }
+    }
+  }
+}
+
 // ---------------------- setup / loop ----------------------
 void setup() {
   Serial.begin(115200);
@@ -335,13 +348,7 @@ void setup() {
     steppers[i]->setSpeed(0);
   }
 
-  if(!is_card_here) {
-    while(true) {
-      for (int i = 0; i < NUM_MOTORS; i++) {
-        steppers[i]->runSpeed();
-      }
-    }
-  }
+  critical_error_script();
 
   // Спроба завантажити дані з логу
   bool log_loaded = false;
@@ -431,6 +438,13 @@ void loop() {
       int error = target_points[i] - actual_reducer_points[i];
       int abs_error = abs(error);
 
+      if(!is_this_first_error_check[i] && abs_error - previus_error[i] >= 100 ) {
+        Serial.print("Cabel for ");
+        Serial.print(i);
+        Serial.print(" motor is not connected correctly");
+        critical_error_script();
+      } 
+
       bool at_min_limit = (!calibration_mode) && (actual_reducer_points[i] <= min_limit[i] && error < 0);
       bool at_max_limit = (!calibration_mode) && (actual_reducer_points[i] >= max_limit[i] && error > 0);
 
@@ -447,6 +461,7 @@ void loop() {
           motor_moving[i] = false;
           motor_direction[i] = 0;
           request_log_write = true;
+          is_this_first_error_check[i] = true;
         }
       } else {
         if (abs_error > hysteresis_range) {
@@ -458,6 +473,11 @@ void loop() {
         } else {
           steppers[i]->setSpeed(0);
           motor_moving[i] = false;
+          is_this_first_error_check[i] = true;
+        }
+        if(motor_moving[i] == true && is_this_first_error_check[i] == true) {
+          previus_error[i] = abs_error;
+          is_this_first_error_check[i] = false;
         }
       }
     }
